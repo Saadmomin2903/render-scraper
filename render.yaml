@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: facebook-scraper-api
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /docs
+    envVars:
+      - key: FB_EMAIL
+        sync: false
+      - key: FB_PASSWORD
+        sync: false
