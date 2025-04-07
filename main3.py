@@ -57,7 +57,11 @@ async def get_facebook_comments(request: PostRequest):
                 '--disable-accelerated-jpeg-decoding',
                 '--disable-accelerated-mjpeg-decode',
                 '--disable-accelerated-video-decode',
-                '--single-process',
+                # Needed to avoid captcha 
+                '--proxy-server="direct://"',
+                '--proxy-bypass-list=*',
+                # Fingerprinting prevention
+                '--disable-blink-features=AutomationControlled',
                 # Memory optimization
                 '--js-flags="--max-old-space-size=460"',
                 # Original anti-bot args
@@ -80,7 +84,7 @@ async def get_facebook_comments(request: PostRequest):
         # Create a context with more realistic browser parameters
         context = await browser.new_context(
             viewport={"width": 1366, "height": 768},  # Smaller viewport to save memory
-            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             is_mobile=False,
             has_touch=False,
             locale='en-US',
@@ -88,7 +92,112 @@ async def get_facebook_comments(request: PostRequest):
             color_scheme='light',
             java_script_enabled=True,
             bypass_csp=True,
+            extra_http_headers={
+                'Accept-Language': 'en-US,en;q=0.9',
+                'sec-ch-ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"',
+                'sec-fetch-dest': 'document',
+                'sec-fetch-mode': 'navigate',
+                'sec-fetch-site': 'none',
+                'sec-fetch-user': '?1',
+                'upgrade-insecure-requests': '1'
+            }
         )
+        
+        # Add stealth.min.js to avoid detection
+        await context.add_init_script("""
+        const newProto = navigator.__proto__;
+        delete newProto.webdriver;
+        navigator.__proto__ = newProto;
+        
+        // Store the existing descriptor
+        const originalQuery = window.navigator.permissions.query;
+        
+        // Redefine the method
+        window.navigator.permissions.query = (parameters) => {
+            if (parameters.name === 'notifications') {
+                return Promise.resolve({ state: Notification.permission });
+            }
+            return originalQuery(parameters);
+        };
+        
+        // Plugins
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => {
+                return [
+                    {
+                        0: {
+                            type: 'application/x-google-chrome-pdf',
+                            suffixes: 'pdf',
+                            description: 'Portable Document Format',
+                            enabledPlugin: Plugin,
+                            __proto__: MimeType
+                        },
+                        name: 'Chrome PDF Plugin',
+                        filename: 'internal-pdf-viewer',
+                        description: 'Portable Document Format',
+                        __proto__: Plugin
+                    },
+                    {
+                        0: {
+                            type: 'application/pdf',
+                            suffixes: 'pdf',
+                            description: '',
+                            enabledPlugin: Plugin,
+                            __proto__: MimeType
+                        },
+                        name: 'Chrome PDF Viewer',
+                        filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
+                        description: '',
+                        __proto__: Plugin
+                    },
+                    {
+                        0: {
+                            type: 'application/x-nacl',
+                            suffixes: '',
+                            description: 'Native Client Executable',
+                            enabledPlugin: Plugin,
+                            __proto__: MimeType
+                        },
+                        1: {
+                            type: 'application/x-pnacl',
+                            suffixes: '',
+                            description: 'Portable Native Client Executable',
+                            enabledPlugin: Plugin,
+                            __proto__: MimeType
+                        },
+                        name: 'Native Client',
+                        filename: 'internal-nacl-plugin',
+                        description: '',
+                        __proto__: Plugin
+                    }
+                ]
+            }
+        });
+        
+        // Languages
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en']
+        });
+        
+        // Hardware concurrency
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+            get: () => 8
+        });
+        
+        // Add canvas fingerprint
+        const getParameter = WebGLRenderingContext.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(parameter) {
+            if (parameter === 37445) {
+                return 'Intel Inc.';
+            }
+            if (parameter === 37446) {
+                return 'Intel Iris OpenGL Engine';
+            }
+            return getParameter.apply(this, [parameter]);
+        };
+        """)
         
         # Enable JavaScript console logging
         context.on('console', lambda msg: print(f'BROWSER LOG: {msg.text}'))
@@ -282,11 +391,76 @@ async def get_facebook_comments(request: PostRequest):
             }''')
 
             # Step 3: Expand all comments using multiple strategies
-            max_attempts = 10  # Reduced from 20 to save resources
+            max_attempts = 15  # Increased from 10 to give more time for comments to load
             attempts = 0
             total_clicks = 0
             last_comment_count = 0
-            
+
+            # First, add a longer initial wait to ensure the page loads completely
+            await asyncio.sleep(8)  # Increased initial wait time
+            await page.wait_for_load_state('networkidle')
+
+            # More aggressive scroll to ensure all content is loaded
+            await page.evaluate('''() => {
+                // Perform multiple scrolls to ensure content is loaded
+                const scrollDown = () => {
+                    window.scrollTo(0, document.body.scrollHeight);
+                    return new Promise(resolve => setTimeout(resolve, 500));
+                };
+                
+                return (async () => {
+                    for (let i = 0; i < 5; i++) {
+                        await scrollDown();
+                    }
+                    return true;
+                })();
+            }''')
+            await asyncio.sleep(5)  # Wait longer after scrolling
+
+            # Try to directly find the comments section and force it to be visible
+            await page.evaluate('''() => {
+                // Try to identify and force visibility of comments sections
+                const possibleCommentSections = [
+                    'div[aria-label="Comments"]',
+                    'div.x1j85h84',
+                    'div.x4k7w5x',
+                    'div.x1pi30zi',
+                    'div[data-pagelet="Comments"]',
+                    'div.xsag5q8'
+                ];
+                
+                for (const selector of possibleCommentSections) {
+                    const section = document.querySelector(selector);
+                    if (section) {
+                        // Force visibility
+                        section.style.display = 'block';
+                        section.style.visibility = 'visible';
+                        section.scrollIntoView({behavior: 'smooth', block: 'center'});
+                        console.log("Found and made visible comment section with selector:", selector);
+                    }
+                }
+                
+                // Also try to click any "View comments" or "View more comments" buttons
+                const commentButtons = Array.from(document.querySelectorAll('div[role="button"]'))
+                    .filter(el => {
+                        const text = el.textContent.toLowerCase();
+                        return text.includes('view') && (text.includes('comment') || text.includes('reply'));
+                    });
+                
+                if (commentButtons.length > 0) {
+                    console.log("Found comment buttons:", commentButtons.length);
+                    commentButtons.forEach(button => {
+                        try {
+                            button.click();
+                            console.log("Clicked a comment button");
+                        } catch (e) {
+                            console.error("Error clicking button:", e);
+                        }
+                    });
+                }
+            })''')
+            await asyncio.sleep(5)  # Wait after trying to force comment visibility
+
             while attempts < max_attempts:
                 # Get current comment count to check if we're making progress
                 current_comment_count = await page.evaluate('''() => {
@@ -300,6 +474,68 @@ async def get_facebook_comments(request: PostRequest):
                     break
                     
                 last_comment_count = current_comment_count
+                
+                # Add improved comment detection that tries multiple selectors
+                if current_comment_count == 0 and attempts >= 3:
+                    print("Still no comments detected, trying alternative selectors...")
+                    alternative_count = await page.evaluate('''() => {
+                        // Try different selectors for comments
+                        const selectors = [
+                            'div.x1lliihq',
+                            'div.x1n2onr6',
+                            'div.x78zum5',
+                            'div.xzueoph',
+                            'div.xms4yrp',
+                            'div.x1r8uery',
+                            'div[data-testid="UFI2CommentsList/root"]',
+                            'ul[data-testid="UFI2CommentsList/root"]',
+                            'div.x1jx94hy',
+                            'form ~ div > div',  // Comments often appear after the comment form
+                            'div.x168nmei',
+                            'div.x13lgxp2'
+                        ];
+                        
+                        for (const selector of selectors) {
+                            const elements = document.querySelectorAll(selector);
+                            const possibleComments = Array.from(elements).filter(el => {
+                                // Look for elements that have typical comment characteristics
+                                const hasText = el.textContent.length > 20;
+                                const hasAuthor = el.querySelector('a[role="link"]') !== null;
+                                const isVisible = el.offsetWidth > 0 && el.offsetHeight > 0;
+                                const notPost = !el.textContent.includes("Share") && !el.textContent.includes("Like");
+                                
+                                return hasText && isVisible && (hasAuthor || notPost);
+                            });
+                            
+                            if (possibleComments.length > 0) {
+                                console.log("Found potential comments using selector:", selector, possibleComments.length);
+                                return possibleComments.length;
+                            }
+                        }
+                        
+                        // If still no comments, check for specific comment patterns
+                        const allDivs = document.querySelectorAll('div');
+                        const textContainers = Array.from(allDivs).filter(div => {
+                            const text = div.textContent.trim();
+                            return text.length > 30 && 
+                                  !text.includes("See more") && 
+                                  !text.includes("View more comments") &&
+                                  div.querySelectorAll('a, span').length > 0;
+                        });
+                        
+                        if (textContainers.length > 0) {
+                            console.log("Found text containers that might be comments:", textContainers.length);
+                            return textContainers.length;
+                        }
+                        
+                        return 0;
+                    }''');
+                    
+                    if (alternative_count > 0) {
+                        print(f"Found {alternative_count} potential comments using alternative selectors");
+                        current_comment_count = alternative_count;
+                    }
+                }
                 
                 # More efficient scrolling strategy for headless mode
                 await page.evaluate('''() => {
@@ -388,52 +624,135 @@ async def get_facebook_comments(request: PostRequest):
             
             print(f"Made {total_clicks} clicks to expand comments")
             
-            # Step 4: Scrape the comments
+            # Step 4: Scrape the comments - use a more robust approach
             comments = await page.evaluate('''() => {
                 const comments = [];
-                const commentElements = Array.from(document.querySelectorAll('div[role="article"]'));
                 
-                console.log("Total comment elements found:", commentElements.length);
+                // Try multiple selectors for comment elements
+                const commentSelectors = [
+                    'div[role="article"]',
+                    'div.x1lliihq',
+                    'div.x1n2onr6 > div.x78zum5',
+                    'div.xzueoph',
+                    'div.x168nmei',
+                    'div.x13lgxp2',
+                    'div[data-testid="UFI2Comment/root_depth_0"]',
+                    'div.x1r8uery',
+                    'div.x1jx94hy'
+                ];
                 
-                // Skip the first element as it's likely the post itself
-                const actualComments = commentElements.slice(1);
+                // Try each selector
+                let commentElements = [];
+                for (const selector of commentSelectors) {
+                    const elements = document.querySelectorAll(selector);
+                    if (elements.length > 1) {  // More than 1 to skip the post itself
+                        console.log(`Found ${elements.length} elements with selector: ${selector}`);
+                        commentElements = Array.from(elements);
+                        // Skip the first element only if we have multiple, as it might be the post
+                        if (elements.length > 1) {
+                            commentElements = commentElements.slice(1);
+                        }
+                        break;
+                    }
+                }
                 
+                // If still no comments via selectors, try a more general approach
+                if (commentElements.length === 0) {
+                    console.log("No comments found via selectors, trying general approach");
+                    
+                    // Find potential comment containers - look for text blocks in the page
+                    const allDivs = document.querySelectorAll('div');
+                    commentElements = Array.from(allDivs).filter(div => {
+                        // Skip extremely small or empty divs
+                        if (div.offsetWidth < 100 || div.offsetHeight < 30 || div.textContent.trim().length < 20) {
+                            return false;
+                        }
+                        
+                        // Look for divs that might contain comments (has text, maybe links, deeper in the page)
+                        const hasText = div.textContent.trim().length > 30;
+                        const notHeader = !div.textContent.includes("Comments") && !div.textContent.includes("Most Relevant");
+                        const notPost = !div.textContent.includes("Share") || div.querySelectorAll('button').length < 3;
+                        const mightBeComment = div.querySelectorAll('a').length > 0 || div.querySelectorAll('span').length > 2;
+                        
+                        return hasText && notHeader && notPost && mightBeComment;
+                    });
+                }
+                
+                console.log("Total comment elements found for processing:", commentElements.length);
+                
+                // Process found comment elements
                 // Limit to 100 comments to save resources
-                const limitedComments = actualComments.slice(0, 100);
+                const limitedComments = commentElements.slice(0, 100);
                 
                 limitedComments.forEach((comment, index) => {
                     try {
                         // Extract the comment content
-                        const contentElements = comment.querySelectorAll('div[dir="auto"]:not([style*="display: none"])');
+                        // First try specific dir="auto" elements which typically contain the main text
                         let content = '';
+                        const contentElements = comment.querySelectorAll('div[dir="auto"], span[dir="auto"]');
                         
-                        // Take the longest text content as the comment
-                        contentElements.forEach(el => {
-                            const text = el.textContent.trim();
-                            if (text && text.length > content.length) {
-                                content = text;
+                        if (contentElements.length > 0) {
+                            // Take the longest text content as the comment
+                            contentElements.forEach(el => {
+                                const text = el.textContent.trim();
+                                if (text && 
+                                    text.length > content.length && 
+                                    !text.includes("See more") && 
+                                    !text.includes("Like") && 
+                                    !text.includes("Reply")) {
+                                    content = text;
+                                }
+                            });
+                        }
+                        
+                        // If no content found with dir="auto" elements, try any text content
+                        if (!content || content.length < 15) {
+                            // Get all text nodes in the comment
+                            const walker = document.createTreeWalker(comment, NodeFilter.SHOW_TEXT);
+                            let texts = [];
+                            let node;
+                            while (node = walker.nextNode()) {
+                                const text = node.textContent.trim();
+                                if (text && text.length > 10) {
+                                    texts.push(text);
+                                }
                             }
-                        });
+                            
+                            // Find the longest text section that's not a button or UI element
+                            if (texts.length > 0) {
+                                texts.sort((a, b) => b.length - a.length);
+                                for (const text of texts) {
+                                    if (!text.includes("Like") && 
+                                        !text.includes("Reply") && 
+                                        !text.includes("See more") &&
+                                        text.length > 15) {
+                                        content = text;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                         
                         // Extract the author name using various selectors to catch different FB layouts
                         let author = '';
                         
                         // First try: Look for the author name in specific class patterns
                         const authorElements = [
-                            // Common desktop FB pattern - strong tag with author name
-                            ...comment.querySelectorAll('strong.x1heor9g, strong.html-strong'),
+                            // Common FB patterns for author names
+                            ...comment.querySelectorAll('strong, h3, h4, a[role="link"] span'),
                             // Mobile FB pattern - span with author class
-                            ...comment.querySelectorAll('span.f20'),
-                            // Another common pattern - profile link with author name
-                            ...comment.querySelectorAll('a[role="link"] span.xt0psk2, a[aria-label*="profile"] span'),
-                            // Alternative pattern - any link within header area
-                            ...comment.querySelectorAll('h3 a, h4 a, .x1heor9g a, .x11i5rnm a')
+                            ...comment.querySelectorAll('span.f20, span.x1heor9g, span.xt0psk2'),
+                            // Profile links often contain the author name
+                            ...comment.querySelectorAll('a[href*="/profile.php"], a[href*="facebook.com/"]')
                         ];
                         
                         // Try to extract author from the found elements
                         for (const el of authorElements) {
                             const name = el.textContent.trim();
-                            if (name && name.length > 0 && name.length < 50) {
+                            if (name && name.length > 0 && name.length < 50 &&
+                                !name.includes("Like") && 
+                                !name.includes("Reply") &&
+                                !name.includes("See more")) {
                                 author = name;
                                 break;
                             }
@@ -441,26 +760,22 @@ async def get_facebook_comments(request: PostRequest):
                         
                         // If no author found with specific selectors, try more general approach
                         if (!author) {
-                            // Look for typical author layout patterns
-                            const topElements = Array.from(comment.querySelectorAll('div[dir="auto"]')).slice(0, 3);
-                            for (const el of topElements) {
-                                const text = el.textContent.trim();
-                                // Author names are typically short and at the beginning of the comment
-                                if (text && text.length > 0 && text.length < 40 && 
-                                    !text.includes("Commented") && !text.includes("replied") && 
-                                    !text.includes("http") && !text.includes("www.")) {
-                                    author = text;
-                                    break;
-                                }
+                            // Try to find author by position (usually at the beginning of the comment)
+                            const allTexts = Array.from(comment.querySelectorAll('*'))
+                                .map(el => el.textContent.trim())
+                                .filter(text => text.length > 0 && text.length < 40);
+                            
+                            if (allTexts.length > 0) {
+                                author = allTexts[0]; // First text is often the author
                             }
                         }
                         
-                        if (content) {
-                        comments.push({
-                            'comment': content,
+                        if (content && content.length > 15) {
+                            comments.push({
+                                'comment': content,
                                 'author': author || 'Unknown User',
                                 'index': index
-                        });
+                            });
                         }
                     } catch (e) {
                         console.error('Error processing comment:', e);
