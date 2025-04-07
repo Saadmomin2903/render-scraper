@@ -531,11 +531,9 @@ async def get_facebook_comments(request: PostRequest):
                         return 0;
                     }''');
                     
-                    if (alternative_count > 0) {
-                        print(f"Found {alternative_count} potential comments using alternative selectors");
-                        current_comment_count = alternative_count;
-                    }
-                }
+                    if alternative_count > 0:
+                        print(f"Found {alternative_count} potential comments using alternative selectors")
+                        current_comment_count = alternative_count
                 
                 # More efficient scrolling strategy for headless mode
                 await page.evaluate('''() => {
